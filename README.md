@@ -1,6 +1,6 @@
 # lein-webapp-template
 
-A Leiningen template for AMQP services.
+A Leiningen template for AMQP based services.
 
 ## Usage with Leiningen 2
 
