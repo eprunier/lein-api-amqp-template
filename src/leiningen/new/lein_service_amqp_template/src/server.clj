@@ -12,36 +12,73 @@
 (def ^:const queue-name "{{name}}-queue")
 (def ^:const routing-key "{{name}}")
 
+(defn- create-exchange
+  [channel]
+  (le/topic channel exchange-name))
+
+(defn- create-queue
+  [channel]
+  (-> channel
+      (lq/declare queue-name :exclusive false :auto-delete true)
+      (.getQueue)))
+
+(defn- create-binding
+  [channel queue]
+  (lq/bind channel queue exchange-name :routing-key routing-key))
+
+(defn- reply
+  [ch queue ^bytes payload]
+  (println (format "[consumer] Reply to message: %s"
+                   (String. payload "UTF-8")))
+  (lb/publish ch "" queue payload))
+
+(defn- consume
+  [{:keys [content-type] :as metadata} ^bytes payload]
+  (println (format "[consumer] Received a message: %s, content type: %s"
+                   (String. payload "UTF-8")
+                   content-type)))
+
 (defn message-handler
-  [ch {:keys [content-type delivery-tag type] :as meta} ^bytes payload]
-  (println (format "[consumer] Received a message: %s, delivery tag: %d, content type: %s, type: %s"
-                   (String. payload "UTF-8") delivery-tag content-type type)))
+  [ch {reply-to :reply-to :as metadata} ^bytes payload]
+  (if reply-to
+    (reply ch reply-to payload)
+    (consume metadata payload)))
+
+(defn- subscribe-to-queue
+  [channel]
+  (lc/subscribe channel queue-name message-handler :auto-ack true))
+
+(defn- close
+  [entity]
+  (when (and entity 
+             (not (rmq/closed? entity)))
+    (rmq/close entity)))
+
+(defn- manage-exception
+  [exception channel connection]
+  (.printStackTrace exception)
+  (close channel)
+  (close connection))
 
 (defn start
   []
   (let [connection (rmq/connect)
         channel (lch/open connection)]
     (try
-      (le/direct channel exchange-name :auto-delete true)
-      (let [queue (-> channel
-                      (lq/declare queue-name :exclusive false :auto-delete true)
-                      (.getQueue))]
-        (lq/bind channel queue exchange-name :routing-key routing-key)
-        (lc/subscribe channel queue-name message-handler :auto-ack true))
+      (create-exchange channel)
+      (let [queue (create-queue channel)]
+        (create-binding channel queue)
+        (subscribe-to-queue channel))
       (println (str "Service started on channel " (.getChannelNumber channel)))
-      {:connection connection
-       :channel channel}
       (catch Exception e
-        (rmq/close channel)
-        (rmq/close connection)         
-        (.printStackTrace e)))))
+        (manage-exception e channel connection)))
+    {:connection connection
+     :channel channel}))
 
 (defn stop
-  [{channel :channel
-    connection :connection
-    consumer :consumer}]
-  (rmq/close channel)
-  (rmq/close connection)
+  [{:keys [channel connection] :as system}]
+  (close channel)
+  (close connection)
   (println "Service stopped"))
 
 (defn -main
